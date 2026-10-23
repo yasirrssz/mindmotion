@@ -48,6 +48,8 @@ canvas{display:block;width:100%;height:190px}
 .bar b{display:block;height:100%;background:var(--ac);width:0;transition:width .5s}
 .bar b.lo{background:var(--hi)}
 .row span:last-child{text-align:right;color:var(--mu)}
+.reply{border:1px solid var(--ac);border-radius:8px;padding:10px 14px;margin:6px 0 12px;font-size:18px;font-weight:600;min-height:22px;max-width:62ch}
+table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:right;padding:6px 8px;border-top:1px solid var(--ln)}th:first-child,td:first-child{text-align:left}th{font-weight:600;color:var(--mu)}
 .read{min-height:96px;font-size:16px;line-height:1.55;max-width:62ch}
 .log{display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-height:38px}
 .log span{border:1px solid var(--ln);border-radius:6px;padding:4px 10px}
@@ -72,11 +74,13 @@ canvas{display:block;width:100%;height:190px}
     <button class="run" id="run">Replay a 4-second recording</button>
     <h2>Pipeline</h2>
     <ol id="steps">
-      <li><i></i><div><b>1. Record</b><span>Four sensors on the head capture brain activity.</span></div></li>
-      <li><i></i><div><b>2. Clean</b><span>Filters remove power-line hum, blinks and drift.</span></div></li>
-      <li><i></i><div><b>3. Measure</b><span>Checks how strong the brain’s resting rhythm is at each sensor.</span></div></li>
-      <li><i></i><div><b>4. Decide</b><span>The model picks the movement the person imagined.</span></div></li>
-      <li><i></i><div><b>5. Explain</b><span>Turns the result into a sentence and a command.</span></div></li>
+      <li><i></i><div><b>1. Acquire</b><span>Four sensors on the head capture brain activity (a real recording).</span></div></li>
+      <li><i></i><div><b>2. Clean</b><span>Filters remove power-line hum, drift and fast noise.</span></div></li>
+      <li><i></i><div><b>3. Segment</b><span>Cuts a 4-second window from the recording.</span></div></li>
+      <li><i></i><div><b>4. Extract features</b><span>Measures resting-rhythm and beta power at each sensor.</span></div></li>
+      <li><i></i><div><b>5. Classify</b><span>A trained model picks the movement the person imagined.</span></div></li>
+      <li><i></i><div><b>6. Interpret</b><span>Maps the movement to a meaning, such as a positive response or a request for help.</span></div></li>
+      <li><i></i><div><b>7. Respond</b><span>Writes a sentence and checks confidence before anything is sent.</span></div></li>
     </ol>
   </aside>
   <section class="main">
@@ -95,11 +99,12 @@ canvas{display:block;width:100%;height:190px}
         <div id="mus"></div>
       </div>
     </div>
-    <div class="panel"><h2>Plain-language explanation</h2><div class="read" id="read">The explanation appears here after classification.</div></div>
+    <div class="panel"><h2>System response</h2><p class="sub" id="mean">Meaning of the detected intention appears here.</p><div class="reply" id="reply"></div><div class="read" id="read">The explanation appears here after classification.</div></div>
+    <div class="panel"><h2>Model performance</h2><p class="sub">5-fold cross-validation on this person’s trials. Precision, recall and F1 are averages over the four actions. This page uses Logistic Regression.</p><table id="met"></table></div>
     <div class="panel"><h2>Commands sent</h2><div class="log" id="log"><em>Sent commands appear here.</em></div></div>
   </section>
 </div>
-<p class="note">Signals are real EEG from the PhysioNet EEG Motor Movement/Imagery Dataset (Schalk et al., 2004). Each person has a small model trained on their own earlier trials; the recordings replayed here were held out from training. The sentence explanation is a template, not yet an LLM. Accuracy is modest with only four sensors.</p>
+<p class="note">Signals are real EEG from the PhysioNet EEG Motor Movement/Imagery Dataset (Schalk et al., 2004). Each person has a small model trained on their own earlier trials; the recordings replayed here were held out from training. The reply sentence is a template for now; an LLM API call can replace it. Accuracy is modest with only four sensors.</p>
 </div>
 <script src="data.js"></script>
 <script>
@@ -107,17 +112,19 @@ const D=window.MM_DATA;
 if(!D){document.querySelector('.app').insertAdjacentHTML('afterbegin','<p class="panel">data.js not found. Run export_trials.py and keep data.js next to this file.</p>');throw new Error('data.js missing')}
 const FS=D.fs,N=D.n,CH=D.ch;
 const CLS=[
- {n:'Left hand',cmd:'Yes',hint:'imagining a left-hand movement',where:'C4, the right-side motor area'},
- {n:'Right hand',cmd:'No',hint:'imagining a right-hand movement',where:'C3, the left-side motor area'},
- {n:'Both feet',cmd:'I need help',hint:'imagining moving both feet',where:'Cz, the central motor area'},
- {n:'Rest',cmd:'No command',hint:'staying relaxed',where:''}];
+ {n:'Left hand',cmd:'Yes',meaning:'Positive response',reply:'Yes, that works for me.',hint:'imagining a left-hand movement',where:'C4, the right-side motor area'},
+ {n:'Right hand',cmd:'No',meaning:'Negative response',reply:'No, thank you.',hint:'imagining a right-hand movement',where:'C3, the left-side motor area'},
+ {n:'Both feet',cmd:'I need help',meaning:'Assistance request',reply:'I need help. Please come to me.',hint:'imagining moving both feet',where:'Cz, the central motor area'},
+ {n:'Rest',cmd:'No command',meaning:'No intention',reply:'',hint:'staying relaxed',where:''}];
 let sel=0,busy=false,raw=null,flt=null,rs=60,fsc=20;
 const $=id=>document.getElementById(id);
 const seg=$('seg');
 CLS.forEach((c,i)=>{const b=document.createElement('button');b.innerHTML=c.n+'<small>sends “'+c.cmd+'”</small>';b.setAttribute('aria-pressed',i==sel);b.onclick=()=>{sel=i;[...seg.children].forEach((x,j)=>x.setAttribute('aria-pressed',j==i))};seg.appendChild(b)});
 const sub=$('sub');
 Object.keys(D.subjects).forEach(k=>sub.add(new Option(k.replace('S','Person '),k)));
-const showAcc=()=>$('acc').textContent='Model accuracy on unseen trials: '+Math.round(D.subjects[sub.value].acc*100)+'%';
+const showAcc=()=>{const S=D.subjects[sub.value],M=S.metrics,pc=v=>Math.round(v*100)+'%';
+  $('acc').textContent='Model accuracy on unseen trials: '+pc(S.acc);
+  $('met').innerHTML=M?'<tr><th>Model</th><th>Accuracy</th><th>Precision</th><th>Recall</th><th>F1</th></tr>'+Object.entries(M).map(([k,m])=>'<tr><td>'+k+'</td><td>'+pc(m.acc)+'</td><td>'+m.prec.toFixed(2)+'</td><td>'+m.rec.toFixed(2)+'</td><td>'+m.f1.toFixed(2)+'</td></tr>').join(''):'<tr><td>Run export_trials.py again to add these results.</td></tr>'};
 sub.onchange=showAcc;showAcc();
 const rms=d=>Math.sqrt(d.reduce((s,x)=>s+x.reduce((a,v)=>a+v*v,0),0)/(d.length*N));
 function bq(type,f0,Q){
@@ -156,12 +163,14 @@ async function typeOut(el,txt){el.textContent='';for(const ch of txt){el.textCon
 $('run').onclick=async()=>{
   if(busy)return;busy=true;$('run').disabled=true;$('run').textContent='Replaying…';
   stepEls.forEach((_,i)=>setStep(i,''));
-  ['intent','cmd','read'].forEach(k=>$(k).textContent='');$('intent').textContent='Analysing';$('probs').innerHTML='';$('mus').innerHTML='';
+  ['intent','cmd','read','reply'].forEach(k=>$(k).textContent='');$('intent').textContent='Analysing';$('probs').innerHTML='';$('mus').innerHTML='';
   const S=D.subjects[sub.value],pool=S.trials[sel];raw=pool[Math.floor(Math.random()*pool.length)].map(a=>Float32Array.from(a));flt=null;rs=2.5*rms(raw);draw($('c2'),null,'--ac',fsc,1);
   setStep(0,'run1');await sweep($('c1'),raw,'--raw',rs,1400);setStep(0,'done');
   setStep(1,'run1');flt=raw.map(clean);fsc=2.5*rms(flt);await sweep($('c2'),flt,'--ac',fsc,1000);setStep(1,'done');
-  setStep(2,'run1');await wait(500);const r=classify(flt,S);setStep(2,'done');
-  setStep(3,'run1');await wait(500);setStep(3,'done');
+  setStep(2,'run1');await wait(350);setStep(2,'done');
+  setStep(3,'run1');await wait(500);const r=classify(flt,S);setStep(3,'done');
+  setStep(4,'run1');await wait(500);setStep(4,'done');
+  setStep(5,'run1');await wait(400);
   const best=r.p.indexOf(Math.max(...r.p)),conf=r.p[best],c=CLS[best],ok=best!=3&&conf>=.6;
   $('intent').textContent=c.n;
   $('cmd').textContent=best==3?'No command sent':ok?'Command sent: “'+c.cmd+'”':'Confidence too low, command not sent';
@@ -169,11 +178,12 @@ $('run').onclick=async()=>{
   const low=r.z.indexOf(Math.min(...r.z));
   $('mus').innerHTML=CH.map((k,i)=>'<div class="row"><span>'+k+'</span><div class="bar"><b class="'+(i==low&&best!=3?'lo':'')+'" style="width:0" data-w="'+Math.min(100,r.z[i]*50).toFixed(0)+'"></b></div><span>'+r.z[i].toFixed(2)+'×</span></div>').join('');
   requestAnimationFrame(()=>document.querySelectorAll('.bar b').forEach(b=>b.style.width=b.dataset.w+'%'));
-  setStep(4,'run1');
+  setStep(5,'done');setStep(6,'run1');
+  $('mean').textContent='Detected meaning: '+c.meaning;$('reply').textContent=ok?c.reply:'';
   let t=(best==3?'No clear movement pattern was found, so no command was sent.'
    :'The model matched this recording to '+c.hint+' with '+(conf*100).toFixed(0)+'% confidence. Resting rhythm was weakest at '+CH[low]+', and for this action the usual area is '+c.where+'. The suggested command is “'+c.cmd+'”.'+(ok?'':' Confidence is below 60%, so nothing was sent.'))
    +' This recording was labelled “'+CLS[sel].n+'”, so the model was '+(best==sel?'right':'wrong')+' this time.';
-  await typeOut($('read'),t);setStep(4,'done');
+  await typeOut($('read'),t);setStep(6,'done');
   if(ok){const lg=$('log');if(lg.querySelector('em'))lg.innerHTML='<button class="clear" id="clr">Clear</button>';
     const s=document.createElement('span');s.textContent=c.cmd;lg.insertBefore(s,$('clr'));
     $('clr').onclick=()=>$('log').innerHTML='<em>Sent commands appear here.</em>'}

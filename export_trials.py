@@ -18,7 +18,11 @@ from mne.datasets import eegbci
 from mne.io import read_raw_edf
 from scipy.signal import lfilter
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
+from sklearn.model_selection import StratifiedKFold, cross_val_predict, train_test_split
+from sklearn.pipeline import make_pipeline
+from sklearn.svm import SVC
 from sklearn.preprocessing import StandardScaler
 
 SUBJECTS = [1]  # avoid 88, 89, 92, 100, 104, 106 (known timing problems)
@@ -109,10 +113,22 @@ def main():
         clf = LogisticRegression(max_iter=2000).fit(sc.transform(F[idx_tr]), y[idx_tr])
         acc = clf.score(sc.transform(F[idx_te]), y[idx_te])
         print(f"  trials per class: {len(data[0])}, accuracy on unseen trials: {acc:.0%}")
+        cv = StratifiedKFold(5, shuffle=True, random_state=0)
+        metrics = {}
+        for name, m in {"Logistic Regression": LogisticRegression(max_iter=2000), "SVM (RBF)": SVC(),
+                        "Random Forest": RandomForestClassifier(n_estimators=200, random_state=0)}.items():
+            pred = cross_val_predict(make_pipeline(StandardScaler(), m), F, y, cv=cv)
+            pr, rc, f1, _ = precision_recall_fscore_support(y, pred, average="macro", zero_division=0)
+            metrics[name] = {"acc": round(accuracy_score(y, pred), 3), "prec": round(pr, 3),
+                             "rec": round(rc, 3), "f1": round(f1, 3)}
+            print(f"  {name}: accuracy {metrics[name]['acc']:.0%}, precision {pr:.2f}, recall {rc:.2f}, F1 {f1:.2f}")
+            if name == "Logistic Regression":
+                print("  Confusion matrix (rows = true, columns = predicted; left, right, feet, rest):")
+                print(confusion_matrix(y, pred))
         trials = {str(k): [np.round(X_raw[i], 1).tolist() for i in idx_te if y[i] == k]
                   for k in range(4)}
         subjects[f"S{sid}"] = {
-            "acc": round(float(acc), 3), "trials": trials,
+            "acc": round(float(acc), 3), "metrics": metrics, "trials": trials,
             "mean": sc.mean_.tolist(), "std": sc.scale_.tolist(),
             "W": clf.coef_.tolist(), "b": clf.intercept_.tolist(),
         }
